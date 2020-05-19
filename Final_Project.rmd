@@ -1,0 +1,389 @@
+---
+title: "Final Project - Created by Michael Tang, Alex Neumyer"
+output: html_document
+---
+### Introduction
+League of Legends is one of the most popular video games played by millions of players worldwide. In short, League of Legends is a "team-based strategy game where two teams of five ... face off to destroy the other's base" (Riot Games). League of Legends also has an established competitive scene where regionally franchised teams sign players to compete. The League Championship Series (LCS) in North America just finished and it will be interesting to see some of the patterns that differentiate top tier teams from their counterparts and show the most popular champions in competitive League of Legends. 
+
+To read more about League of Legends and the LCS: https://na.leagueoflegends.com/en-us/how-to-play/ and https://en.wikipedia.org/wiki/League_of_Legends_Championship_Series
+
+![](LeagueLogo.png)
+
+### Table of Contents
+In this tutorial, I will provide an overview of the data science process and show how to turn raw data into useful analytics.
+
+1. Data Preparation/Manipulation 
+2. Exploratory Data Anlysis
+3. Machine Learning - Linear Regression
+4. Machine Learning - Tree Models
+5. Machine Learning - Hypothesis Testing
+
+### 1. Data Preparation 
+This dataset is the "2020 Spring" downloadable csv found at https://oracleselixir.com/matchdata/. I downloaded the csv file, moved it into my working directory, and imported it into R. I use read_csv() to import the file into R and head() to see the first 6 rows. The head() documentation can be found here:https://www.rdocumentation.org/packages/utils/versions/3.6.2/topics/head. 
+
+``` {r loadlcs, warning=FALSE, message=FALSE}
+library(tidyverse)
+
+spring2020 <- read_csv("Spr2020_LoL_Match_Data.csv")
+
+head(spring2020)
+```
+
+##### 1.1 Data Observations and Explanation
+
+This dataset is extensive as it includes all matches played in Spring 2020 from all regions and has a row for each player in each game on each team. Some terminology that would be helpful:
+
+* champion = chracter played
+* dpm = damage per minute
+* damage share = player's damage dealt/team damage
+* wpm = wards per minute
+* total cs = number of minions killed + number of monsters killed
+* cspm = creep score per minute (number of minions/monsters killed per minute)
+* KDA = (kills + assists)/deaths
+* There are 5 positions in the game: top, jungle (jng), mid, bot, support(sup). Often times bot is called ADC. 
+
+As I only focused on those games from the LCS, I filter for "LCS" and choose columns that will help us for player and team analysis. Columns such as first blood, dragons, barons are unimportant for our analysis and are therefore dropped to simplify data. I use the select() function to select only columns I want and the rename() function to rename columns names. 
+
+```{r tidy}
+tidy_spring2020 <- spring2020 %>%
+  filter(league=="LCS", position!="team") %>%
+  select(gameid, league, side, position, player, team, champion, ban1, ban2, ban3, ban4, ban5, gamelength, 
+         result, kills, deaths, assists, teamkills, teamdeaths, damagetochampions, dpm, damageshare, 
+         wardsplaced, wpm, controlwardsbought, visionscore, totalgold, "total cs", cspm)  %>%
+  rename(totalcs = "total cs")
+
+head(tidy_spring2020)
+``` 
+
+##### 1.1 Data Preparation 
+Looking at our dataset, I need our visionscore and totalcs columns to be numeric in order to do computations. I also tidied the gameid column to only include the unique number. 
+
+```{r tidy2}
+tidy_spring2020 <- tidy_spring2020 %>%
+  mutate(visionscore = as.numeric(visionscore)) %>%
+  mutate(totalcs = as.numeric(totalcs)) %>%
+  mutate(gameid = gsub(".+\\/", "", gameid))
+
+head(tidy_spring2020)
+```
+
+### 2. Exploratory Data Analysis
+Now that our data is clean, I can start performing preliminary analysis to better understand and visualize our data.
+
+##### 2.1 Comparing KDA to Team Standings
+As the Spring 2020 split just ended, it will be interesting to see how team KDA compares to standings. The standings can be viewed here: https://lol.gamepedia.com/LCS/2020_Season/Spring_Season 
+
+The top 3 teams of the split are:
+
+1. Cloud 9 (17-1)
+2. Evil Geniuses (10-8)
+3. 100 Thieves (10-8)
+
+![](C9.png)
+
+I first compute the total number of kills, deaths, and assists for each team across every game and then calculate KDA for each team to arrange in descending order. 
+
+```{r eda_1}
+team_stats <- tidy_spring2020 %>%
+  select(team, kills, deaths, assists) %>%
+  group_by(team) %>%
+  summarize(total_kills = sum(kills), total_deaths = sum(deaths), total_assists = sum(assists)) %>%
+  mutate(team_kda = (total_kills + total_assists)/total_deaths) %>%
+  arrange(desc(team_kda)) 
+
+head(team_stats)
+```
+
+Our results show that Cloud 9 has the highest KDA of all teams (winning that by a landslide) followed by Team Liquid, Team SoloMid, and FlyQuest which have KDA's that are pretty close to each other. Comparing this to their standings, it is unsurprising to see Cloud9 have the highest KDA by a landslide as they stomped the other teams (17-1). However, it is surprising to see Team Liquid have the second highest KDA as they are at the bottom of the standings. 
+
+In order to visualize our data to increase our understanding, I will create a bar graph to visualize the relationship between a categorical variable and numerical variable. I use the reorder() function found here https://www.rdocumentation.org/packages/treeplyr/versions/0.1.7/topics/reorder to reorder the bars based on team_kda
+
+```{r visualize_eda1}
+team_stats %>% 
+  ggplot(mapping=aes(x=reorder(team, team_kda), y=team_kda)) +
+  geom_bar(stat="identity") + theme(axis.text.x = element_text(angle=90)) + coord_flip() + 
+  xlab("Team") + ylab("Team KDA") + ggtitle("KDA For Each Team")
+```
+
+##### 2.2 Comparing Player KDA 
+Although KDA is not the only metric to compare players, it does give a general insight on how well each individual player performed. Moreso, it will be interesting to see the KDAs of players who received the Most-Valuable-Player(MVP) awards for the split. 
+
+The split MVPs (in order):
+
+1. Cloud 9 Blaber
+2. Cloud 9 Nisqy
+3. Cloud 9 Zven 
+
+Instead of just grouping by team this time, I will now group by player and team and perform the same KDA calculation. 
+```{r eda2}
+player_stats <- tidy_spring2020 %>%
+  select(player, team,  kills, deaths, assists) %>% 
+  group_by(player, team) %>%
+  summarize(total_kills = sum(kills), total_deaths = sum(deaths), total_assists = sum(assists)) %>%
+  mutate(player_kda = (total_kills + total_deaths)/total_assists) %>%
+  arrange(desc(player_kda))
+
+head(player_stats)
+```
+
+Surprisingly, no Cloud 9 players were in the top 5 in terms of KDA. This means that MVP isn't taken directly from a player's KDA and instead awarded based on other analytical factors (which is a good thing). 
+
+Again, lets create a bar graph to better visualize our data. This time I can color each bar by team. 
+
+```{r eda2_visualize}
+player_stats %>%
+  ggplot(mapping=aes(x=reorder(player, player_kda), y=player_kda, color=team)) +
+  geom_bar(stat="identity") + theme(axis.text.x = element_text(angle=90)) + coord_flip() + 
+  xlab("Player") + ylab("Player KDA") + ggtitle("KDA For Each Player") +
+  scale_x_discrete(guide = guide_axis(n.dodge=2))
+```
+
+###### 2.3 Most Played Champion
+With over 140 champions in League of Legends, it is always interesting to see which champion was picked the most. Furthermore, League of Legends also recieves bi-weekly updates in order to strenghten weak champions and decrease the power of those that are strong. 
+
+We get our dataset by grouping by champion in order to use the tally() function to count the number of times each categorical variable appears. The tally() function documentation can be found here: https://www.rdocumentation.org/packages/dplyr/versions/0.5.0/topics/tally.
+
+```{r eda3}
+champion_play <- tidy_spring2020 %>%
+  select(champion) %>%
+  group_by(champion) %>%
+  tally() %>% 
+  arrange(desc(n))
+  
+champion_play
+```
+
+It can be seen that Aatrox and Aphelios have been played the most, with Nautilus and Tahm Kench trailing close behind. As there are 91 rows in this dataframe, there have been 91 unique champions played in LCS Spring2020. As League of Legends has currently 148 champions, just over 60% of champions in the game have seen competitive play this year! That's pretty decent!
+
+I will create a bar graph to visualize this data. 
+
+```{r eda3_visualize}
+champion_play %>%
+  ggplot(mapping=aes(x=reorder(champion, n), y=n)) +
+  geom_bar(stat="identity") + theme(axis.text.x = element_text(angle=90)) + coord_flip() + 
+  ylab("Number of Times Played") + xlab("Champion") + ggtitle("How many times was a champion played?") +
+  scale_x_discrete(guide = guide_axis(n.dodge=2))
+```
+
+##### 2.4 Most Banned Champion
+Analogous to my previous section, I would want to see which champion has been the most overpowered and was therefore removed from the most games. 
+
+I observe that the bans for each game are repeated once for every player on the team. I first call the unique() function to remove those duplicates so I can have the bans for each team in each game. 
+```{r eda4_1}
+champion_ban1 <- tidy_spring2020 %>%
+  group_by(gameid) %>%
+  select(gameid, ban1, ban2, ban3, ban4, ban5) %>%
+  unique()
+
+head(champion_ban1)
+```
+
+I then use the gather() function to move the columns ban1, ban2, ban3, ban4, and ban5, into one ban column so I can count the occurrences of each champion in an easier fashion. The gameid column does not really matter in this case. 
+```{r eda4_2}
+champion_ban2 <- gather(champion_ban1, gameid, ban) 
+head(champion_ban2)
+```
+
+I then use the tally() function in a similar manner as in 2.3. 
+```{r eda4_3}
+champion_ban_final <- champion_ban2 %>%
+  group_by(ban) %>% 
+  tally() %>%
+  arrange(desc(n)) %>%
+  rename(champion=ban)
+
+head(champion_ban_final)
+```
+Looking at the data and as an avid League of Legends player, it comes to no surprise that Senna, Sett, and Syndra have been banned the most given their power. However, for me, the fact that LeBlanc received the second highest number of bans comes as a surprise. 
+
+Let's visualize this data again using a bar graph. 
+
+```{r eda4_visualize}
+champion_ban_final %>% 
+  ggplot(mapping=aes(x=reorder(champion, n), y=n)) +
+  geom_bar(stat="identity") + theme(axis.text.x = element_text(angle=90)) + coord_flip() + 
+  ylab("Number of Times Banned") + xlab("Champion") + ggtitle("How many times was a champion banned?") +
+  scale_x_discrete(guide = guide_axis(n.dodge=2))
+```
+
+##### 2.5 Team that Picked Aatrox the Most
+To continue with making fun graphs in R with ggplot, lets look at how often teams were picking Aatrox. I filtered so Aatrox would be the only champion shown, and then counted the number of occurences while grouping by team.
+```{r eda_5}
+graphdf <- tidy_spring2020 %>%
+  group_by(team) %>%
+  filter(champion=="Aatrox") %>%
+  summarize(num_aatrox=n())
+
+graphdf
+
+graphdf %>%  
+  ggplot(mapping=aes(y=num_aatrox, x=team)) + geom_bar(stat="identity") + coord_flip() + ylab("Number of Aatrox Picks") + xlab("Team") + ggtitle("Frequency of Aatrox Picks across Teams")
+```
+
+Based off of this graph, we can see that Viper (FQ’s top) loves Aatrox. Many people believe that Aatrox is overpowered, but this shows that Cloud9 didn’t abuse him for their success. Pick any variables and plug them into ggplot to get cool visuals.
+
+### 3. Machine Learning - Linear Regression
+For the next section, we will focus on using data science tools to approximate models for correlation in data. Basically, we are going to use parts of R and the broom library to try and model certain stat combinations. Here is an example: I believe that there is a relationship between an ADC’s damage to champions and total gold. One would expect that with more gold, ADC’s would do more damage to champions as they would be able to buy more items. So, I will mutate the dataframe to only look at ADC’s, their damage per minute, and their total gold. I am using damage per minute (dpm) over total damage to champions to avoid miscalculating the correlation due to variable game times.
+
+There is also code for graphing the relationship between total gold and dpm, just to compare to the results from the model.
+```{r mllr1}
+library(broom)
+ml1df <- tidy_spring2020 %>%
+  filter(position=="bot") %>%
+  select(dpm, totalgold)
+head(ml1df)
+
+dvgmodel <- lm(dpm~ totalgold, data=ml1df)
+tidy(dvgmodel)
+
+ml1df %>%
+  ggplot(aes(x=totalgold, y=dpm)) +
+  geom_point() +
+  geom_smooth(method=lm)
+```
+
+This method is suggesting this model: dpm = 9.022 + 0.034 * totalgold. This suggests that for every 1000 gold gained by an ADC, their DPM should increase by 34. Comparing to the graph, this looks close enough, from 15000 to 20000 looks to around a 150-200 dpm increase.
+
+Now lets look at the stats behind the model. The intercept has a p-value greater than 0.05, which is the standard alpha-level for hypothesis testing (see https://www.statisticshowto.com/what-is-an-alpha-level/), which means that the intercept is not statistically different from 0. However, the coefficient on total gold (0.034) is less than 0.05, so it is statistically significant. This basically means that we can be fairly sure that this correlation isn’t just due to chance.
+
+However, this isn’t enough for us, we need to check how accurate our model is. To do that, we will use “glance” from the broom package to check the r-squared value for this model.
+
+```{r mllr2}
+dvgmodel %>%
+  glance() %>%
+  select(r.squared)
+```
+
+This shows us that approximately 38.6% of DPM’s variation is explained by the total gold variable. The higher that the r-squared value is, the better, as an r-squared value of 1 means all of a y variable’s variation is being explained by the x variable, so the linear model is perfect (see https://www.investopedia.com/terms/r/r-squared.asp). In our case, 0.386 is quite low, so our model is pretty bad at predicting DPM from total gold. This likely means that their relationship is not a simple linear model.
+
+One way we can amend this is by including another variable. Thinking aboutLCS and the professional scene as a whole, a big reason as to why some teams win a lot and some teams lose a lot is due to individual player skill. So, we should include an interaction between the player and total gold.
+
+```{r mllr3}
+playdvgdf <- tidy_spring2020 %>%
+  filter(position=="bot", player=="Zven" | player=="Bang" | player=="Doublelift") %>%
+  select(dpm, totalgold, player)
+head(playdvgdf)
+
+playdvgdf %>%
+  ggplot(aes(x=totalgold, y=dpm, color=player)) +
+  geom_point() +
+  geom_smooth(method=lm)
+```
+
+The above graph compares dpm to total gold for Bang, Doublelift, and Zven (ADC’s for EG, TL, and C9, respectively). This suggests that our previous model was indeed incorrect to exclude individual player skill, as their individual models look very different. While Doublelift and Zven have similar slopes to their regression lines, their intercepts are widely different. Bang’s regression line has a similar intercept to Zven’s regression line, but has a greater slope, suggesting his DPM increases more per gold gained. So lets make a model that includes player as an interaction.
+
+Our interaction would look like this: DPM ~= TotalGold * Player. Since player is a string of characters and not a number, we have to use a different way of representing it in our model. The easiest way is to make a list of every ADC player and give each one a 0 or 1 depending on if they are playing.
+
+Model: DPM ~= Player1 * TotalGold + Player2 * TotalGold + … + PlayerN * TotalGold
+
+When we try to predict for Player3, we would put a 0 for every other player, and a 1 for Player3. This would cause the model to simplify to just DPM ~= Player3*TotalGold, where Player3 is 1. This allows us to have a different coefficient for each player, and possibly achieve a better model for comparing total gold and dpm. However, this will mean that our data will look a little messy, as we will see a lot more output. But lets just try it!
+
+```{r mllr4}
+#This code looks at the old model, but only with 3 players' data.
+newdvgmodel <- lm(dpm~ totalgold, data=playdvgdf)
+tidy(newdvgmodel)
+
+newdvgmodel %>%
+  glance() %>%
+  select(r.squared)
+
+#This code looks at the new model, but only with 3 players' data.
+playdvgmodel <- lm(dpm~ player*totalgold, data=playdvgdf)
+tidy(playdvgmodel)
+
+playdvgmodel %>%
+  glance() %>%
+  select(r.squared)
+```
+
+You might see a little more code here than you were expecting, so let me explain. When I first ran the code testing the new model, I realized there were a lot of players to look at, so to keep it simple, I filtered the dataset to only be Doublelift, Zven, and Bang. Then, looking at the result from glance, I saw that the r-squared value was EVEN WORSE than before (hard to believe, I know). I realized that this was due to the fact that I was only focusing on three players this time. So, by re-running the old model but only on those three players, I was able to see an r-squared value that better represented our changes.
+
+The first table shows the statistics for the old model on the filtered data set. The second table shows the r-squared value for the model in the first table. The third table shows the new model on the filtered data set. The fourth table shows the r-squared value for the model in the third table. That’s a lot of tables.
+
+Let me explain the third table. The broom package lm method selects a specific variable (player) to call the “baseline”. In this example, Bang was selected as the baseline (alphabetical order). So to read Doublelift’s coefficients from this table, you take Bang’s intercept (term = (Intercept)), and then add the “playerDoublelift” estimate to it to get the intercept coefficient used for Doublelift’s model. For Doublelift’s total gold coefficient you do the same: totalgold is Bang’s total gold coefficient, so just add playerDoublelift:totalgold to it to get Doublelift’s total gold coefficient. Notice that the p-value of every row is > 0.05 except for the totalgold row. That suggests that there is a correlation between totalgold and DPM, but it doesn’t really depend on player, as there wasn’t a statistically significant difference between each player’s total gold coefficients.
+
+The main thing I want to convey is that changing our model actually improved the r-squared value, as the old model (for those three players) has an r-squared value of 0.129, while the new model has an r-squared value of 0.289. As to why these are both below the r-squared value of the old model conditioned on all of the ADC’s, well, I don’t really have an answer. It could be because some of those players had much less game time, so there was less data to work off and they were swinging the model. It could also be that Zven, Doublelift, and Bang are all great players that don’t need gold to improve their DPM, while the other ADC players really require gold, so the other players were meeting the model, while these three don’t have a good model that fits them.
+
+Our r-squared value is still very low, and to counter that, I would suggest trying all manner of combinations at home! You can add on variables with “+”, or add more interactions by multiplying them with "*".
+
+### 4. Machine Learning - Tree Models
+Linear regression models aren’t the only type of predictor out there. In fact, there are so many you would probably have to take multiple college courses to learn them all. I am not going to explain them all, but lets look at one more, cooler to look at, model.
+
+Regression trees take in a suggested model and create breakpoints that divide the data up as it believes would fit the model best (see https://en.wikipedia.org/wiki/Residual_sum_of_squares). Lets look at a different correlation. I believe that a jungler has a large impact on the result of a game, so lets look at how their activities influence if a game is a win or a loss. The activities I will focus on are wards per minute (wpm) and cs per minute (cspm).
+
+Model: Result = WPM + CSPM
+
+```{r mltree1}
+library(tree)
+
+jgdf <- tidy_spring2020 %>%
+  filter(position=="jng") %>%
+  select(result, wpm, cspm, player)
+head(jgdf)
+
+tree <- tree(result~ wpm + cspm, data=jgdf)
+plot(tree)
+text(tree, pretty=0, cex=0.8)
+```
+
+I was right about it being a pretty cool model! To read this model, you start from the top and follow the branches depending on the conditions. So if we have a cspm of 5 and a wpm of 0.3, you would start at the top, then go left (5 < 5.84), then go right (0.3 > 0.23), then right, then left, then left. Going all the way to the bottom, you would see a result of 0.8333. Wait a second, our results are either 0 or 1, for loss or win (respectively). What does 0.8333 mean? That means that out of all of the data points that fall into that section, the average result is 0.8333. You could loosely interpret that to mean that our model believes we have an 83% chance of winning with a jungler who has 6 cspm and 0.3 wpm.
+
+Figuring out if this model is good is harder, as there aren’t any easy to use functions like “glance”. So I’ll do a little loose testing. I’ll starting by using the tree package “predict” method, which allows me to give it a dataset to run through the model. Then I will check how many of those are correct according to the actual data and show the results.
+
+```{r mltree2}
+newjgdf <- jgdf %>%
+  filter(player=="Closer") %>%
+  mutate(betterres= ifelse(result == 1, "Yes", "No"))
+
+tree_pred_prob <- predict(tree, newjgdf)
+tree_pred <- ifelse(tree_pred_prob > 0.5, "Yes", "No")
+print(table(predicted=tree_pred, observed=newjgdf$betterres))
+```
+
+I decided to start by only focusing on Closer (GG’s jungler), and seeing if the tree could predict his winrate. Looking at this data, there were only 22 games for it to pull from, so you should immediately realize that the sample size is a bit small. It would definitely help if we could include past years, but then you need to take into account roster swaps.
+
+This table shows that our tree model got 8 losses correct and 8 wins correct, however it said there was 1 win that Closer should have lost, and 5 losses that it believes Closer should have won. Seems this tree is a Golden Guardians fan! This is a small data set, but these differences seem large enough for us to say that our model probably isn’t amazing when it comes to predict wins and losses off of just jungler cspm and wpm.
+
+There are many ways to improve this model, and you can do more testing by selecting other players, or selecting a random set of data to test with. The best way to test your model is to select a set of data to test with, remove it from the model-making data, make the model, and then test using that random data. This ensures that random data was not used to make the model, which means the model won’t have been influenced by that set of data. I chose data that was a part of the model-making data in this example just to show how it would work, and because I knew the sample size was small.
+
+### 5. Machine Learning - Hypothesis Testing
+
+![](Ornn.png)
+
+Hypothesis testing is a very important statistical tool that allows us to suggest correlations and check if they are correct. Watching the games from this past split, I noticed Ornn was pick or ban, where he would be seen every game as either a played champion or banned away. I wondered to myself if banning him was actually a good option, or if those teams were hurting their future. So, lets suggest that banning Ornn decreases a team’s chance of winning.
+
+For hypothesis testing, you set up a null hypothesis, which is the opposite of what you believe, and an alternate hypothesis, which is what you believe. For our example: Null Hypothesis: Win percentage of games where Ornn is banned = 50% Alternate Hypothesis: Win percentage of games where Ornn is banned < 50%
+
+So, lets jump into the code!
+
+First, I need to cut out the parts I don’t need. I want to make sure every side of every game is represented only once, and that I only see the bans and the result.
+
+```{r mlht1}
+htdf <- tidy_spring2020 %>%
+  select(gameid, side, ban1, ban2, ban3, result) %>%
+  distinct()
+head(htdf)
+```
+  
+Next, I want to check if Ornn is among the bans. I do this with an “ifelse” with a new column that records if Ornn was banned by that side. Then I remove the attributes that I don’t want to see anymore and group by the result to summarize the wins and losses.
+
+```{r mlht2}
+upddf <- htdf %>%
+  mutate(ornnban = ifelse(htdf$ban1 == "Ornn" | htdf$ban2 == "Ornn" | htdf$ban2 == "Ornn", 1, 0)) %>%
+  select(-ban1, -ban2, -ban3, -side, -gameid) %>%
+  group_by(result) %>%
+  summarize(ornnbanned=sum(ornnban), notbanned=sum(ornnban*0 + 1) - sum(ornnban)) 
+head(upddf)
+```
+
+Looking at this data, we can see that Ornn isn’t banned in 85 games. 85 = sum(ornnbanned) - 125 total games. Now, lets do some hypothesis testing. Since we are working with a proportion in a population, we have to use a specific formula (shown in the code below as “z=”). Then, pnorm is used to calculate the p-value given this data.
+
+```{r mlht3}
+phat = 19/(21+19)
+p0 = .5
+n = 40
+z = (phat - p0)/sqrt(p0*(1-p0)/n)
+pnorm(z)
+```
+
+This number (0.376) is quite high for a p-value, and since it is greater than 0.05 (default alpha level for statistics), we cannot reject the null, and cannot determine if banning Ornn hurts a team’s win percentage.
